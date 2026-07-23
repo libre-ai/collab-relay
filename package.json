@@ -1,0 +1,44 @@
+{
+  "name": "@libre-ai/collab-relay",
+  "version": "0.1.0",
+  "description": "Ciphertext-only relay for sealed CRDT deltas — forwards opaque frames without decryption or logging.",
+  "private": true,
+  "license": "EUPL-1.2",
+  "type": "module",
+  "keywords": [
+    "libre-ai",
+    "collab",
+    "relay",
+    "websocket",
+    "encryption",
+    "transport"
+  ],
+  "homepage": "https://libre-ai.fr",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/libre-ai/libre-ai.git",
+    "directory": "packages/collab-relay"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@libre-ai/collab-core": "workspace:*"
+  },
+  "devDependencies": {
+    "ws": ">=8.17.0"
+  },
+  "scripts": {
+    "check:bun": "bun ../../tools/quality/check-bun-minimum.ts",
+    "pretest": "bun run check:bun",
+    "test": "bun test",
+    "preserve": "bun run check:bun",
+    "serve": "bun src/server.ts"
+  }
+}
