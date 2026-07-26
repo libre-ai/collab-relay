@@ -28,12 +28,6 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "dependencies": {
-    "@libre-ai/collab-core": "workspace:*"
-  },
-  "devDependencies": {
-    "ws": ">=8.21.0"
-  },
   "scripts": {
     "check:bun": "bun ../../tools/quality/check-bun-minimum.ts",
     "pretest": "bun run check:bun",
