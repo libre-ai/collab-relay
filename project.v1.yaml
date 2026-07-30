@@ -1,0 +1,49 @@
+# Fiche d'état du projet — autorité de l'état depuis ADR-0020 (design §6.2).
+# La section statut du README est générée depuis cette fiche (sentinelles).
+schema_version: libre-ai.project.v1
+project: collab-relay
+repository: libre-ai/collab-relay
+kind: satellite
+layer: couche-4
+statement:
+  for: "les projets de la constellation Libre AI"
+  who_faces: "le coût et la dérive de machineries recopiées d'un repo à l'autre"
+  enables: "relayer la collaboration sans dépendre d'un service tiers"
+  producing:
+    - "un relais auto-hébergeable testé"
+  without_depending_on:
+    - "aucun service tiers, aucune copie non vérifiée — consommation épinglée et gates de dérive"
+summary: "Relais de collaboration : transport des sessions d'édition partagée."
+current_situation: >-
+  Née verte en γ 3.4 (ex packages/collab-relay).
+scope:
+  - "Relais de collaboration : transport des sessions d'édition partagée."
+non_goals:
+  - "aucune seconde implémentation durable de ce domaine ailleurs dans la constellation"
+dependencies:
+  - on: libre-ai/governance
+    why: "gabarit de flotte et gates de qualité"
+    pinned: "épinglée par SHA (ou release pour les outils) là où elle est consommée"
+maturity: usable
+confidence: medium
+exposure: spec-published
+freshness:
+  last_verified_on: "2026-07-30"
+scope_stability: stable
+benchmark:
+  none: "n/a (shared brick, no external parity target)"
+phases:
+  - id: service
+    title: En service dans la constellation
+    exit_criteria:
+      - id: consumed-pinned
+        text: "La brique est consommée épinglée par les repos qui la déclarent."
+        weight: 1
+        status: accepted
+        evidence:
+          date: "2026-07-29"
+          reference: "gate-acceptance-log 2026-07-29 (ligne 3.4), PRs hub #279-#283"
+      - id: compat-policy
+        text: "L'API est couverte par une politique de compatibilité déclarée et un versionnage de rupture outillé."
+        weight: 1
+        status: pending
