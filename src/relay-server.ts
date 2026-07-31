@@ -13,9 +13,34 @@
  * unchanged and encrypted. Decryption happens only at the destination (if
  * the recipient is a member of the MLS group that encrypted the frame).
  *
- * Security property: if a relay operator gains access to these frames, they
- * learn only: member ID, epoch, and frame structure (nonce length, ciphertext size).
- * They cannot read the delta contents without the MLS key.
+ * Threat model
+ * ------------
+ * Confidentiality is out of the relay's hands by construction: it holds no key
+ * and never decrypts. An operator with access to the frames learns only member
+ * ID, epoch, and frame structure (nonce length, ciphertext size); the delta
+ * contents stay unreadable without the MLS key.
+ *
+ * Availability and routing integrity ARE the relay's responsibility, because it
+ * owns the session-to-connection map that decides who receives what. Every
+ * mutation of that map is therefore bound to the connection requesting it: a
+ * client may take a free slot, and may only release or send on a slot it holds
+ * on its own socket. Without that binding any connected client could evict any
+ * member of any session (targeted denial of service) or take over a member's
+ * slot at join time and silently black-hole its traffic. Neither attack needs a
+ * key, so the ciphertext-only design does not defend against them on its own.
+ *
+ * Not defended, deliberately:
+ * - MLS group membership is NOT validated here. A client may hold a slot in a
+ *   session whose frames it cannot decrypt; that check belongs at the
+ *   destination, where the AEAD tag is verified.
+ * - The `id` field inside a frame is not authenticated. It is routing metadata,
+ *   not a claim of identity — recipients trust the AEAD tag, not this field.
+ * - A *free* slot is first-come-first-served: the relay has no identity
+ *   provider, so it cannot tell a legitimate member from a squatter claiming
+ *   the memberId first. The guarantee stops at "a slot that is taken cannot be
+ *   stolen, released, or sent on by a third party"; pre-emptive squatting
+ *   remains possible and now surfaces as an explicit join refusal (1008)
+ *   instead of a silent takeover.
  *
  * Frame schema (opaque to relay):
  *   { id: string, epoch: number, nonce: Uint8Array, ciphertext: Uint8Array, tag: Uint8Array }
@@ -70,6 +95,19 @@ interface RelayWebSocket {
  */
 interface SessionState {
   members: Map<string, RelayWebSocket>;
+}
+
+/**
+ * Shape check for an opaque frame field: present and array-like.
+ *
+ * The relay re-serialises nonce/ciphertext/tag verbatim and never inspects
+ * their length or content. It does have to know they exist: re-serialising an
+ * absent field throws out of the WebSocket message handler, turning any
+ * malformed frame into an unhandled exception and a remotely triggered stack
+ * trace on the relay's stderr.
+ */
+function isByteSequence(value: unknown): boolean {
+  return Array.isArray(value) || ArrayBuffer.isView(value);
 }
 
 /**
@@ -145,7 +183,7 @@ export class CiphertextOnlyRelayServer {
           } else if (msg.type === "sealed-frame") {
             this.handleSealedFrame(ws, msg);
           } else if (msg.type === "leave") {
-            this.handleLeave(msg);
+            this.handleLeave(ws, msg);
           }
         },
 
@@ -166,6 +204,10 @@ export class CiphertextOnlyRelayServer {
    * ⚠ The relay does NOT validate that the member is actually a member of the
    * MLS group (that validation happens at the destination, when the frame is
    * decrypted). This design keeps the relay stateless and key-agnostic.
+   *
+   * It does own the routing slot, however: an occupied slot is never
+   * overwritten, because overwriting it would silently redirect the holder's
+   * traffic to the newcomer.
    *
    * @param ws - The WebSocket connection.
    * @param msg - The join message.
@@ -189,6 +231,18 @@ export class CiphertextOnlyRelayServer {
       ws.close(1011, "Session not found");
       return;
     }
+
+    // A routing slot belongs to the connection that took it. Refuse a claim on
+    // an occupied one instead of overwriting it, which would black-hole the
+    // holder's traffic without either party noticing. A slot whose socket is no
+    // longer OPEN is stale (its close handler has not run yet) and may be
+    // reclaimed; re-joining from the same socket stays idempotent.
+    const holder = session.members.get(memberId);
+    if (holder && holder !== ws && holder.readyState === WebSocket.OPEN) {
+      ws.close(1008, "memberId already in use in this session");
+      return;
+    }
+
     session.members.set(memberId, ws);
 
     // Send acknowledgment
@@ -228,12 +282,30 @@ export class CiphertextOnlyRelayServer {
       return;
     }
 
-    // Do NOT validate frame.nonce, ciphertext, or tag lengths; keep the relay stateless.
+    // Do NOT validate frame.nonce, ciphertext, or tag lengths; keep the relay
+    // stateless. Their presence is another matter: they are re-serialised
+    // below, and an absent one throws out of the message handler.
+    if (
+      !isByteSequence(frame.nonce) ||
+      !isByteSequence(frame.ciphertext) ||
+      !isByteSequence(frame.tag)
+    ) {
+      sender.close(1008, "Invalid frame structure");
+      return;
+    }
 
     // Broadcast to all other members in the session
     const session = this.sessions.get(sessionId);
     if (!session) {
       // Session doesn't exist; silently ignore (client may be out of sync)
+      return;
+    }
+
+    // Only a connection holding a slot in this session gets its frames fanned
+    // out; otherwise any client could inject into any session it never joined.
+    // Dropped silently: a frame in flight just after a leave is a race, not an
+    // attack, and closing on it would punish a legitimate client.
+    if (!this.holdsSlot(session, sender)) {
       return;
     }
 
@@ -266,11 +338,17 @@ export class CiphertextOnlyRelayServer {
   }
 
   /**
-   * Handle a leave message: remove member from the session.
+   * Handle a leave message: release the sender's own slot in the session.
    *
+   * The removal is bound to the requesting connection: the relay drops a leave
+   * naming a slot this socket does not hold. Without that check any connected
+   * client could evict any memberId from any sessionId — an unauthenticated,
+   * remote, targeted denial of service.
+   *
+   * @param ws - The WebSocket connection that sent this message.
    * @param msg - The leave message.
    */
-  private handleLeave(msg: RelayMessage): void {
+  private handleLeave(ws: RelayWebSocket, msg: RelayMessage): void {
     const sessionId = msg.sessionId;
     const memberId = msg.memberId;
 
@@ -279,12 +357,34 @@ export class CiphertextOnlyRelayServer {
     }
 
     const session = this.sessions.get(sessionId);
-    if (session) {
-      session.members.delete(memberId);
-      if (session.members.size === 0) {
-        this.sessions.delete(sessionId);
+    if (!session) {
+      return;
+    }
+
+    // Only the holder of the slot may release it.
+    if (session.members.get(memberId) !== ws) {
+      return;
+    }
+
+    session.members.delete(memberId);
+    if (session.members.size === 0) {
+      this.sessions.delete(sessionId);
+    }
+  }
+
+  /**
+   * Whether this connection currently holds a routing slot in the session.
+   *
+   * @param session - The session to look in.
+   * @param ws - The WebSocket connection to look for.
+   */
+  private holdsSlot(session: SessionState, ws: RelayWebSocket): boolean {
+    for (const client of session.members.values()) {
+      if (client === ws) {
+        return true;
       }
     }
+    return false;
   }
 
   /**
