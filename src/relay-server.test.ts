@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { CiphertextOnlyRelayServer, type RelayFrame, type RelayHandle } from "./relay-server";
+import {
+  CiphertextOnlyRelayServer,
+  type RelayFrame,
+  type RelayHandle,
+  type RelayLimits,
+} from "./relay-server";
 
 /** Relays and client sockets opened by the running test, torn down after it. */
 const startedRelays: RelayHandle[] = [];
@@ -19,8 +24,10 @@ afterEach(() => {
  * suite fail on any runner that happens to hold it, for reasons unrelated to
  * the code under test. The relay is stopped when the test ends.
  */
-async function startRelay(): Promise<{ relay: CiphertextOnlyRelayServer; port: number }> {
-  const relay = new CiphertextOnlyRelayServer();
+async function startRelay(
+  limits?: Partial<RelayLimits>,
+): Promise<{ relay: CiphertextOnlyRelayServer; port: number }> {
+  const relay = new CiphertextOnlyRelayServer(limits);
   const handle = await relay.serve({ hostname: "127.0.0.1", port: 0 });
   startedRelays.push(handle);
   return { relay, port: handle.port };
@@ -445,6 +452,60 @@ describe("CiphertextOnlyRelayServer", () => {
       await settle(100);
 
       expect(relay.stats()).toEqual({ sessions: 0, slots: 0, staleSlots: 0 });
+    });
+  });
+
+  describe("12. Admission is bounded", () => {
+    it("should refuse a session beyond the relay's session capacity", async () => {
+      const { relay, port } = await startRelay({ maxSessions: 4, maxMembersPerSession: 3 });
+
+      const client = await openClient(port);
+      for (let index = 0; index < 4; index++) {
+        await join(client, `bounded-session-${index}`, "first");
+      }
+      expect(relay.stats().sessions).toBe(4);
+
+      // The relay is full. One more session must be refused, not created.
+      const overflow = await openClient(port);
+      const refused = awaitClose(overflow);
+      overflow.send(joinMessage("bounded-session-overflow", "first"));
+      await settle(100);
+
+      expect(relay.stats().sessions).toBe(4);
+      expect(await refused).toBe(1013);
+    });
+
+    it("should refuse a member beyond the session's member capacity", async () => {
+      const { relay, port } = await startRelay({ maxSessions: 4, maxMembersPerSession: 3 });
+
+      const sessionId = "crowded-session";
+      const client = await openClient(port);
+      for (let index = 0; index < 3; index++) {
+        await join(client, sessionId, `member-${index}`);
+      }
+      expect(relay.stats().slots).toBe(3);
+
+      // The session is full. One more member must be refused, not admitted.
+      const overflow = await openClient(port);
+      const refused = awaitClose(overflow);
+      overflow.send(joinMessage(sessionId, "member-overflow"));
+      await settle(100);
+
+      expect(relay.stats().slots).toBe(3);
+      expect(await refused).toBe(1013);
+    });
+
+    it("should still let a member reclaim a slot the relay already holds for it", async () => {
+      const { relay, port } = await startRelay({ maxSessions: 4, maxMembersPerSession: 1 });
+
+      const sessionId = "reconnect-session";
+      const client = await openClient(port);
+      await join(client, sessionId, "only-member");
+
+      // Re-joining an owned slot adds nothing, so capacity must not refuse it:
+      // a full session would otherwise lock its own members out on a retry.
+      await join(client, sessionId, "only-member");
+      expect(relay.stats()).toEqual({ sessions: 1, slots: 1, staleSlots: 0 });
     });
   });
 });
