@@ -1,6 +1,6 @@
 {
   "name": "@libre-ai/collab-relay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ciphertext-only relay for sealed CRDT deltas \u2014 forwards opaque frames without decryption or logging.",
   "private": true,
   "license": "EUPL-1.2",
