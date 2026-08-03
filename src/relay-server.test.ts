@@ -404,4 +404,47 @@ describe("CiphertextOnlyRelayServer", () => {
       void rebound.stop(true);
     });
   });
+
+  describe("11. Disconnect releases every slot the socket held", () => {
+    it("should retain no session after a socket holding two slots per session closes", async () => {
+      const { relay, port } = await startRelay();
+
+      // Nothing forbids one socket from taking two slots in the same session,
+      // and that is the whole cost of the attack: one WebSocket, two frames
+      // per session, and the relay is expected to forget all of it on close.
+      const sessions = 200;
+      const client = await openClient(port);
+
+      const allJoined = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("the relay stopped acknowledging")), 4000);
+        let acknowledged = 0;
+        client.addEventListener("message", (event) => {
+          const msg = JSON.parse(event.data as string);
+          if (msg.type === "joined") {
+            acknowledged++;
+            if (acknowledged === sessions * 2) {
+              clearTimeout(timer);
+              resolve();
+            }
+          }
+        });
+      });
+
+      for (let index = 0; index < sessions; index++) {
+        client.send(joinMessage(`leak-session-${index}`, "first"));
+        client.send(joinMessage(`leak-session-${index}`, "second"));
+      }
+      await allJoined;
+
+      expect(relay.stats()).toEqual({ sessions, slots: sessions * 2, staleSlots: 0 });
+
+      // The only client disconnects. Every slot it held goes with it.
+      const closed = awaitClose(client);
+      client.close();
+      await closed;
+      await settle(100);
+
+      expect(relay.stats()).toEqual({ sessions: 0, slots: 0, staleSlots: 0 });
+    });
+  });
 });
