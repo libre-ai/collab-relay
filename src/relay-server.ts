@@ -37,6 +37,13 @@
  * memory growth driven remotely, without a key, at one WebSocket and two frames
  * per session.
  *
+ * Releasing what is finished is only half of it: a session is created by
+ * whoever asks for one, so admission is capped as well. The routing map holds
+ * at most `maxSessions` sessions of at most `maxMembersPerSession` slots, and a
+ * join over either ceiling is refused with close code 1013 rather than served.
+ * Without that cap the map grows as fast as a client can send frames, and no
+ * amount of correct release helps.
+ *
  * Not defended, deliberately:
  * - MLS group membership is NOT validated here. A client may hold a slot in a
  *   session whose frames it cannot decrypt; that check belongs at the
@@ -49,6 +56,15 @@
  *   stolen, released, or sent on by a third party"; pre-emptive squatting
  *   remains possible and now surfaces as an explicit join refusal (1008)
  *   instead of a silent takeover.
+ * - Admission is bounded, not fair. The ceilings cap what the routing map can
+ *   hold in total; they do not stop one client from filling it and starving
+ *   everybody else, because a client refused on one socket simply opens
+ *   another and the relay has no identity to charge the quota to. Per-client
+ *   fairness needs a rate limiter or an authenticated front end above this
+ *   layer; the ceiling here only guarantees that the memory stops growing.
+ * - Frame rate and frame size are not limited. A member holding a slot can
+ *   spend the relay's bandwidth and its peers' attention freely; the routing
+ *   map, which is what this file owns, stays bounded either way.
  *
  * Frame schema (opaque to relay):
  *   { id: string, epoch: number, nonce: Uint8Array, ciphertext: Uint8Array, tag: Uint8Array }
@@ -106,6 +122,29 @@ interface SessionState {
 }
 
 /**
+ * Ceilings on what the relay will admit.
+ *
+ * A session is created on demand by whoever asks for it, so without a ceiling
+ * the routing map grows as fast as an unauthenticated client can send frames.
+ * These two numbers are the only thing that bounds the relay's memory.
+ */
+export interface RelayLimits {
+  /** Maximum number of sessions held at once. */
+  readonly maxSessions: number;
+  /** Maximum number of routing slots inside one session. */
+  readonly maxMembersPerSession: number;
+}
+
+/**
+ * Default ceilings: at most 1024 sessions of at most 128 members, so the
+ * routing map cannot exceed 131 072 slots whatever any client does.
+ */
+const DEFAULT_LIMITS: RelayLimits = {
+  maxSessions: 1024,
+  maxMembersPerSession: 128,
+};
+
+/**
  * A census of what the routing map currently holds.
  *
  * Occupancy is the relay's own availability surface: it is the thing that
@@ -160,6 +199,11 @@ function isByteSequence(value: unknown): boolean {
   return Array.isArray(value) || ArrayBuffer.isView(value);
 }
 
+/** A capacity ceiling only means something as a positive whole number. */
+function isPositiveInteger(value: number): boolean {
+  return Number.isInteger(value) && value > 0;
+}
+
 /**
  * CiphertextOnlyRelayServer — forwards sealed frames opaquely.
  *
@@ -169,10 +213,39 @@ function isByteSequence(value: unknown): boolean {
  *
  * Usage:
  *   const relay = new CiphertextOnlyRelayServer();
- *   relay.serve({ hostname: "0.0.0.0", port: 9000 });
+ *   const handle = await relay.serve({ hostname: "0.0.0.0", port: 9000 });
+ *
+ * Capacity ceilings are the only constructor argument, and never key material:
+ *   new CiphertextOnlyRelayServer({ maxSessions: 64, maxMembersPerSession: 8 });
  */
 export class CiphertextOnlyRelayServer {
   private sessions: Map<string, SessionState> = new Map();
+
+  private readonly limits: RelayLimits;
+
+  /**
+   * @param limits - Capacity ceilings; each one defaults to {@link DEFAULT_LIMITS}.
+   * @throws RangeError - If a ceiling is not a positive whole number. A zero or
+   *         negative ceiling would silently close the relay for business, which
+   *         is worse than refusing to start.
+   */
+  constructor(limits: Partial<RelayLimits> = {}) {
+    const resolved: RelayLimits = {
+      maxSessions: limits.maxSessions ?? DEFAULT_LIMITS.maxSessions,
+      maxMembersPerSession: limits.maxMembersPerSession ?? DEFAULT_LIMITS.maxMembersPerSession,
+    };
+
+    if (!isPositiveInteger(resolved.maxSessions)) {
+      throw new RangeError(`maxSessions must be a positive integer, got ${resolved.maxSessions}`);
+    }
+    if (!isPositiveInteger(resolved.maxMembersPerSession)) {
+      throw new RangeError(
+        `maxMembersPerSession must be a positive integer, got ${resolved.maxMembersPerSession}`,
+      );
+    }
+
+    this.limits = resolved;
+  }
 
   /**
    * Start the relay server on the given host and port.
@@ -293,7 +366,9 @@ export class CiphertextOnlyRelayServer {
    *
    * It does own the routing slot, however: an occupied slot is never
    * overwritten, because overwriting it would silently redirect the holder's
-   * traffic to the newcomer.
+   * traffic to the newcomer. And it owns the allocation: a join is the only
+   * thing that grows the routing map, so both capacity ceilings are enforced
+   * here, refused with close code 1013 (try again later).
    *
    * @param ws - The WebSocket connection.
    * @param msg - The join message.
@@ -307,15 +382,19 @@ export class CiphertextOnlyRelayServer {
       return;
     }
 
-    // Ensure session exists
-    if (!this.sessions.has(sessionId)) {
-      this.sessions.set(sessionId, { members: new Map() });
-    }
-
-    const session = this.sessions.get(sessionId);
+    // Create the session on demand, but only while there is room for one. The
+    // ceiling is checked before the allocation, not after: creating first and
+    // refusing after would let a client the relay just refused allocate an
+    // empty session per frame anyway.
+    let session = this.sessions.get(sessionId);
     if (!session) {
-      ws.close(1011, "Session not found");
-      return;
+      if (this.sessions.size >= this.limits.maxSessions) {
+        ws.close(1013, "Relay at session capacity");
+        return;
+      }
+
+      session = { members: new Map() };
+      this.sessions.set(sessionId, session);
     }
 
     // A routing slot belongs to the connection that took it. Refuse a claim on
@@ -326,6 +405,14 @@ export class CiphertextOnlyRelayServer {
     const holder = session.members.get(memberId);
     if (holder && holder !== ws && holder.readyState === WebSocket.OPEN) {
       ws.close(1008, "memberId already in use in this session");
+      return;
+    }
+
+    // Only a slot the session does not have yet consumes capacity. Charging a
+    // re-join would lock a member out of the session it is already in as soon
+    // as that session filled up — a retry or a reconnect must not be refused.
+    if (!holder && session.members.size >= this.limits.maxMembersPerSession) {
+      ws.close(1013, "Session at member capacity");
       return;
     }
 

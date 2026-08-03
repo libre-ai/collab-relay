@@ -200,7 +200,8 @@ describe("CiphertextOnlyRelayServer", () => {
         expect(methods.map((m) => m.toLowerCase())).not.toContain(keyword.toLowerCase());
       }
 
-      // The relay constructor should take only no arguments
+      // The constructor takes capacity ceilings and nothing else — no key
+      // material — and still works with no argument at all.
       const relay2 = new CiphertextOnlyRelayServer();
       expect(relay2).toBeDefined();
     });
@@ -506,6 +507,16 @@ describe("CiphertextOnlyRelayServer", () => {
       // a full session would otherwise lock its own members out on a retry.
       await join(client, sessionId, "only-member");
       expect(relay.stats()).toEqual({ sessions: 1, slots: 1, staleSlots: 0 });
+    });
+
+    it("should refuse to start on a ceiling that is not a positive whole number", () => {
+      // A zero or fractional ceiling would quietly close the relay for
+      // business, or round somewhere nobody chose. Refuse to start instead.
+      expect(() => new CiphertextOnlyRelayServer({ maxSessions: 0 })).toThrow(RangeError);
+      expect(() => new CiphertextOnlyRelayServer({ maxMembersPerSession: 1.5 })).toThrow(
+        RangeError,
+      );
+      expect(() => new CiphertextOnlyRelayServer({ maxSessions: Number.NaN })).toThrow(RangeError);
     });
   });
 });

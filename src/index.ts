@@ -18,6 +18,7 @@ export {
   CiphertextOnlyRelayServer,
   type RelayFrame,
   type RelayHandle,
+  type RelayLimits,
   type RelayMessage,
   type RelayStats,
 } from "./relay-server";
