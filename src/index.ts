@@ -14,4 +14,11 @@
  * Decryption happens only at the destination (if they are an MLS group member).
  */
 
-export { CiphertextOnlyRelayServer, type RelayFrame, type RelayMessage } from "./relay-server";
+export {
+  CiphertextOnlyRelayServer,
+  type RelayFrame,
+  type RelayHandle,
+  type RelayLimits,
+  type RelayMessage,
+  type RelayStats,
+} from "./relay-server";
