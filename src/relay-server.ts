@@ -29,6 +29,14 @@
  * slot at join time and silently black-hole its traffic. Neither attack needs a
  * key, so the ciphertext-only design does not defend against them on its own.
  *
+ * Binding those mutations also closes the path by which a third party used to
+ * purge a slot the relay had failed to release, so the relay owns the release
+ * itself: a disconnecting socket gives up EVERY slot it held, in every session,
+ * and a session emptied that way is collected. Releasing only the first would
+ * strand a routing entry on a closed socket and retain its session forever —
+ * memory growth driven remotely, without a key, at one WebSocket and two frames
+ * per session.
+ *
  * Not defended, deliberately:
  * - MLS group membership is NOT validated here. A client may hold a slot in a
  *   session whose frames it cannot decrypt; that check belongs at the
@@ -466,24 +474,28 @@ export class CiphertextOnlyRelayServer {
   }
 
   /**
-   * Remove a WebSocket connection from all sessions.
+   * Release every routing slot held by a connection, in every session.
    *
    * Called when a client disconnects.
+   *
+   * The sweep is exhaustive on purpose: nothing stops one socket from holding
+   * several slots in the same session, and stopping at the first match leaves
+   * the others pointing at a closed socket. Such a session never reaches zero
+   * members, so it is never collected — unbounded memory growth that any
+   * unauthenticated client drives at one WebSocket and two frames per session.
+   * Since a leave is now bound to the slot's holder, a stranded slot has no
+   * remaining purge path either.
    *
    * @param ws - The WebSocket connection to remove.
    */
   private removeClientFromAllSessions(ws: RelayWebSocket): void {
-    for (const session of this.sessions.values()) {
+    for (const [sessionId, session] of this.sessions) {
       for (const [memberId, client] of session.members) {
         if (client === ws) {
           session.members.delete(memberId);
-          break;
         }
       }
-    }
 
-    // Clean up empty sessions
-    for (const [sessionId, session] of this.sessions) {
       if (session.members.size === 0) {
         this.sessions.delete(sessionId);
       }
