@@ -98,6 +98,30 @@ interface SessionState {
 }
 
 /**
+ * A running relay: the port it actually bound, and the means to stop it.
+ *
+ * `serve` used to discard the server object, so a started relay could never be
+ * stopped: its listener outlived the caller (a test file leaked one listener
+ * per test) and the port had to be known in advance. The handle closes both
+ * gaps — `port` resolves an ephemeral `port: 0` to the port really bound.
+ */
+export interface RelayHandle {
+  /** The port actually bound; resolved, so `port: 0` is usable. */
+  readonly port: number;
+  /**
+   * Stop listening and force-close the connections still open.
+   *
+   * Synchronous on purpose. Bun 1.4.0-canary.1 returns a promise from
+   * `Server.stop()` that never settles once the server has itself closed a
+   * socket — one `ws.close(1008, …)` refusal is enough — while the listening
+   * socket is released either way: the port re-binds on the next statement.
+   * Awaiting the drain would hang the caller; releasing the listener is the
+   * guarantee this handle can actually keep.
+   */
+  stop(): void;
+}
+
+/**
  * Shape check for an opaque frame field: present and array-like.
  *
  * The relay re-serialises nonce/ciphertext/tag verbatim and never inspects
@@ -127,10 +151,11 @@ export class CiphertextOnlyRelayServer {
   /**
    * Start the relay server on the given host and port.
    *
-   * @param config - Server configuration (hostname, port).
+   * @param config - Server configuration (hostname, port; port 0 binds a free one).
+   * @returns A handle carrying the bound port and a stop function.
    */
-  async serve(config: { hostname: string; port: number }): Promise<void> {
-    const _server = Bun.serve({
+  async serve(config: { hostname: string; port: number }): Promise<RelayHandle> {
+    const server = Bun.serve({
       hostname: config.hostname,
       port: config.port,
 
@@ -194,8 +219,17 @@ export class CiphertextOnlyRelayServer {
       },
     });
 
-    console.log(`Ciphertext-only relay listening on ${config.hostname}:${config.port}`);
+    const port = server.port ?? config.port;
+    console.log(`Ciphertext-only relay listening on ${config.hostname}:${port}`);
     console.log("(relay does not decrypt or log plaintext)");
+
+    return {
+      port,
+      stop: (): void => {
+        // Fire and forget: see RelayHandle.stop on why the promise is dropped.
+        void server.stop(true);
+      },
+    };
   }
 
   /**

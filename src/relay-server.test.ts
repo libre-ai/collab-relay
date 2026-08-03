@@ -1,9 +1,35 @@
-import { describe, expect, it } from "bun:test";
-import { CiphertextOnlyRelayServer, type RelayFrame } from "./relay-server";
+import { afterEach, describe, expect, it } from "bun:test";
+import { CiphertextOnlyRelayServer, type RelayFrame, type RelayHandle } from "./relay-server";
+
+/** Relays and client sockets opened by the running test, torn down after it. */
+const startedRelays: RelayHandle[] = [];
+const openedClients: WebSocket[] = [];
+
+afterEach(() => {
+  for (const client of openedClients.splice(0)) {
+    client.close();
+  }
+  for (const handle of startedRelays.splice(0)) {
+    handle.stop();
+  }
+});
+
+/**
+ * Start a relay on a free port. The port is never pinned: a fixed one makes the
+ * suite fail on any runner that happens to hold it, for reasons unrelated to
+ * the code under test. The relay is stopped when the test ends.
+ */
+async function startRelay(): Promise<{ relay: CiphertextOnlyRelayServer; port: number }> {
+  const relay = new CiphertextOnlyRelayServer();
+  const handle = await relay.serve({ hostname: "127.0.0.1", port: 0 });
+  startedRelays.push(handle);
+  return { relay, port: handle.port };
+}
 
 /** Open a client socket and resolve once the connection is established. */
 async function openClient(port: number): Promise<WebSocket> {
   const client = new WebSocket(`ws://127.0.0.1:${port}`);
+  openedClients.push(client);
   await new Promise<void>((resolve) => {
     client.addEventListener("open", () => resolve());
   });
@@ -22,16 +48,37 @@ function collectFrames(client: WebSocket): RelayFrame[] {
   return frames;
 }
 
-/** Record the close code the relay sent to this client, if any. */
-function recordClose(client: WebSocket): { code: number | null } {
-  const state: { code: number | null } = { code: null };
-  client.addEventListener("close", (event) => {
-    state.code = (event as CloseEvent).code;
+/** Resolve with the first sealed frame routed to this client, or fail loudly. */
+function awaitFrame(client: WebSocket, ms = 1000): Promise<RelayFrame> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      client.removeEventListener("message", onMessage);
+      reject(new Error("no sealed frame was routed to this client"));
+    }, ms);
+    const onMessage = (event: MessageEvent): void => {
+      const msg = JSON.parse(event.data as string);
+      if (msg.type === "sealed-frame") {
+        clearTimeout(timer);
+        client.removeEventListener("message", onMessage);
+        resolve(msg.frame);
+      }
+    };
+    client.addEventListener("message", onMessage);
   });
-  return state;
 }
 
-/** Let the relay and the sockets settle before asserting. */
+/** Resolve with the close code the relay sends to this client. */
+function awaitClose(client: WebSocket, ms = 1000): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("the relay never closed this connection")), ms);
+    client.addEventListener("close", (event) => {
+      clearTimeout(timer);
+      resolve((event as CloseEvent).code);
+    });
+  });
+}
+
+/** Let the relay settle before asserting that something did NOT happen. */
 function settle(ms = 150): Promise<void> {
   return new Promise((resolve) => setTimeout(() => resolve(), ms));
 }
@@ -56,75 +103,51 @@ function joinMessage(sessionId: string, memberId: string): string {
   return JSON.stringify({ type: "join", sessionId, memberId });
 }
 
+/** Claim a routing slot and resolve on the relay's acknowledgement. */
+function join(client: WebSocket, sessionId: string, memberId: string, ms = 1000): Promise<void> {
+  const acknowledged = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      client.removeEventListener("message", onMessage);
+      reject(new Error(`the relay never acknowledged the join of ${memberId}`));
+    }, ms);
+    const onMessage = (event: MessageEvent): void => {
+      const msg = JSON.parse(event.data as string);
+      if (msg.type === "joined" && msg.memberId === memberId) {
+        clearTimeout(timer);
+        client.removeEventListener("message", onMessage);
+        resolve();
+      }
+    };
+    client.addEventListener("message", onMessage);
+  });
+  client.send(joinMessage(sessionId, memberId));
+  return acknowledged;
+}
+
 describe("CiphertextOnlyRelayServer", () => {
   describe("1. Frame forwarding is opaque", () => {
     it("should forward a relayed frame unchanged", async () => {
-      // Start the relay server
-      const relay = new CiphertextOnlyRelayServer();
-      const _serverPromise = relay.serve({
-        hostname: "127.0.0.1",
-        port: 9001,
-      });
+      const { port } = await startRelay();
 
-      // Give the server a moment to start
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      // Create two client connections
       const sessionId = "test-session-1";
       const memberId1 = "member-1";
       const memberId2 = "member-2";
 
-      // Build a sealed frame (opaque payload)
+      // An opaque payload the relay must return byte for byte.
       const testFrame: RelayFrame = {
         id: memberId1,
         epoch: 0,
         nonce: new Uint8Array(12),
-        ciphertext: new Uint8Array([1, 2, 3, 4, 5]), // Dummy ciphertext
+        ciphertext: new Uint8Array([1, 2, 3, 4, 5]),
         tag: new Uint8Array(16),
       };
 
-      // Track received frames on member-2
-      const receivedFrames: RelayFrame[] = [];
+      const client2 = await openClient(port);
+      await join(client2, sessionId, memberId2);
+      const delivered = awaitFrame(client2);
 
-      // Connect member-2 and listen for frames
-      const client2 = new WebSocket("ws://127.0.0.1:9001");
-      await new Promise<void>((resolve) => {
-        client2.addEventListener("open", () => {
-          client2.send(
-            JSON.stringify({
-              type: "join",
-              sessionId,
-              memberId: memberId2,
-            }),
-          );
-          resolve();
-        });
-      });
-
-      client2.addEventListener("message", (event) => {
-        const msg = JSON.parse(event.data as string);
-        if (msg.type === "sealed-frame") {
-          receivedFrames.push(msg.frame);
-        }
-      });
-
-      // Connect member-1 and send a frame
-      const client1 = new WebSocket("ws://127.0.0.1:9001");
-      await new Promise<void>((resolve) => {
-        client1.addEventListener("open", () => {
-          client1.send(
-            JSON.stringify({
-              type: "join",
-              sessionId,
-              memberId: memberId1,
-            }),
-          );
-          resolve();
-        });
-      });
-
-      // Send frame from member-1
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      const client1 = await openClient(port);
+      await join(client1, sessionId, memberId1);
       client1.send(
         JSON.stringify({
           type: "sealed-frame",
@@ -139,23 +162,12 @@ describe("CiphertextOnlyRelayServer", () => {
         }),
       );
 
-      // Wait for frame to arrive at member-2
-      await new Promise((resolve) => setTimeout(resolve, 200));
-
-      // Verify member-2 received the frame (unchanged)
-      expect(receivedFrames.length).toBeGreaterThan(0);
-      const received = receivedFrames[0];
-      if (!received) {
-        throw new Error("No frame received");
-      }
+      const received = await delivered;
       expect(received.id).toBe(memberId1);
       expect(received.epoch).toBe(0);
       expect(Array.from(received.nonce)).toEqual(Array.from(testFrame.nonce));
       expect(Array.from(received.ciphertext)).toEqual(Array.from(testFrame.ciphertext));
       expect(Array.from(received.tag)).toEqual(Array.from(testFrame.tag));
-
-      client1.close();
-      client2.close();
     });
   });
 
@@ -189,135 +201,40 @@ describe("CiphertextOnlyRelayServer", () => {
 
   describe("3. Multiple sessions are isolated", () => {
     it("should not leak frames between sessions", async () => {
-      // Start the relay
-      const relay = new CiphertextOnlyRelayServer();
-      const _serverPromise = relay.serve({
-        hostname: "127.0.0.1",
-        port: 9002,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      const { port } = await startRelay();
 
       const session1 = "session-1";
       const session2 = "session-2";
 
-      const receivedFrames: { sessionId: string; frameId: string }[] = [];
+      const listener = await openClient(port);
+      const listenerFrames = collectFrames(listener);
+      await join(listener, session2, "m2-session2");
 
-      // Connect a member to session-2 and listen
-      const client2Session2 = new WebSocket("ws://127.0.0.1:9002");
-      await new Promise<void>((resolve) => {
-        client2Session2.addEventListener("open", () => {
-          client2Session2.send(
-            JSON.stringify({
-              type: "join",
-              sessionId: session2,
-              memberId: "m2-session2",
-            }),
-          );
-          resolve();
-        });
-      });
+      const sender = await openClient(port);
+      await join(sender, session1, "m1-session1");
+      sender.send(sealedFrame(session1, "m1-session1"));
 
-      client2Session2.addEventListener("message", (event) => {
-        const msg = JSON.parse(event.data as string);
-        if (msg.type === "sealed-frame") {
-          receivedFrames.push({
-            sessionId: msg.sessionId,
-            frameId: msg.frame.id,
-          });
-        }
-      });
-
-      // Connect and send from session-1
-      const client1Session1 = new WebSocket("ws://127.0.0.1:9002");
-      await new Promise<void>((resolve) => {
-        client1Session1.addEventListener("open", () => {
-          client1Session1.send(
-            JSON.stringify({
-              type: "join",
-              sessionId: session1,
-              memberId: "m1-session1",
-            }),
-          );
-          resolve();
-        });
-      });
-
-      // Send a frame in session-1
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      client1Session1.send(
-        JSON.stringify({
-          type: "sealed-frame",
-          sessionId: session1,
-          frame: {
-            id: "m1-session1",
-            epoch: 0,
-            nonce: Array.from(new Uint8Array(12)),
-            ciphertext: Array.from(new Uint8Array([1, 2, 3])),
-            tag: Array.from(new Uint8Array(16)),
-          },
-        }),
-      );
-
-      // Wait and check: client in session-2 should NOT receive frames from session-1
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(receivedFrames.length).toBe(0);
-
-      client1Session1.close();
-      client2Session2.close();
+      // Negative assertion: bounded wait, nothing may arrive in it.
+      await settle();
+      expect(listenerFrames.length).toBe(0);
     });
   });
 
   describe("4. Member join/leave", () => {
     it("should track members and clean up empty sessions", async () => {
-      const relay = new CiphertextOnlyRelayServer();
-      const _serverPromise = relay.serve({
-        hostname: "127.0.0.1",
-        port: 9003,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      const { port } = await startRelay();
 
       const sessionId = "test-session-cleanup";
       const memberId = "cleanup-member";
 
-      const client = new WebSocket("ws://127.0.0.1:9003");
+      const client = await openClient(port);
+      await join(client, sessionId, memberId);
 
-      // Join
-      await new Promise<void>((resolve) => {
-        client.addEventListener("open", () => {
-          client.send(
-            JSON.stringify({
-              type: "join",
-              sessionId,
-              memberId,
-            }),
-          );
-
-          client.addEventListener("message", (event) => {
-            const msg = JSON.parse(event.data as string);
-            if (msg.type === "joined") {
-              resolve();
-            }
-          });
-        });
-      });
-
-      // Leave
-      client.send(
-        JSON.stringify({
-          type: "leave",
-          sessionId,
-          memberId,
-        }),
-      );
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      client.send(JSON.stringify({ type: "leave", sessionId, memberId }));
+      await settle(100);
 
       // After leaving, the session should be cleaned up
       // (We can't directly inspect relay state, but the relay should not crash)
-      client.close();
-
       expect(true).toBe(true); // Placeholder assertion
     });
   });
@@ -337,18 +254,14 @@ describe("CiphertextOnlyRelayServer", () => {
 
   describe("6. Routing integrity: leave only affects the sender's own slot", () => {
     it("should ignore a leave sent by a connection that does not hold the slot", async () => {
-      const port = 9004;
-      const relay = new CiphertextOnlyRelayServer();
-      const _serverPromise = relay.serve({ hostname: "127.0.0.1", port });
-      await settle(100);
+      const { port } = await startRelay();
 
       const sessionId = "eviction-session";
 
       // The victim holds the "victim" slot on its own connection.
       const victim = await openClient(port);
-      const victimFrames = collectFrames(victim);
-      victim.send(joinMessage(sessionId, "victim"));
-      await settle(50);
+      await join(victim, sessionId, "victim");
+      const delivered = awaitFrame(victim);
 
       // A third party — holding no slot at all — tries to evict the victim.
       const attacker = await openClient(port);
@@ -357,129 +270,93 @@ describe("CiphertextOnlyRelayServer", () => {
 
       // A legitimate peer broadcasts: the victim must still be routed to.
       const peer = await openClient(port);
-      peer.send(joinMessage(sessionId, "peer"));
-      await settle(50);
+      await join(peer, sessionId, "peer");
       peer.send(sealedFrame(sessionId, "peer"));
-      await settle(200);
 
-      expect(victimFrames.length).toBeGreaterThan(0);
-
-      victim.close();
-      attacker.close();
-      peer.close();
+      expect((await delivered).id).toBe("peer");
     });
 
     it("should still honour a leave sent by the connection that owns the slot", async () => {
-      const port = 9005;
-      const relay = new CiphertextOnlyRelayServer();
-      const _serverPromise = relay.serve({ hostname: "127.0.0.1", port });
-      await settle(100);
+      const { port } = await startRelay();
 
       const sessionId = "self-leave-session";
 
       const leaver = await openClient(port);
+      await join(leaver, sessionId, "leaver");
       const leaverFrames = collectFrames(leaver);
-      leaver.send(joinMessage(sessionId, "leaver"));
-      await settle(50);
 
       // The owner releases its own slot.
       leaver.send(JSON.stringify({ type: "leave", sessionId, memberId: "leaver" }));
       await settle(100);
 
       const peer = await openClient(port);
-      peer.send(joinMessage(sessionId, "peer"));
-      await settle(50);
+      await join(peer, sessionId, "peer");
       peer.send(sealedFrame(sessionId, "peer"));
-      await settle(200);
 
       // Having left, the former member is no longer routed to.
+      await settle();
       expect(leaverFrames.length).toBe(0);
-
-      leaver.close();
-      peer.close();
     });
   });
 
   describe("7. Routing integrity: join cannot steal an occupied slot", () => {
     it("should keep routing to the holder when another connection joins with the same memberId", async () => {
-      const port = 9006;
-      const relay = new CiphertextOnlyRelayServer();
-      const _serverPromise = relay.serve({ hostname: "127.0.0.1", port });
-      await settle(100);
+      const { port } = await startRelay();
 
       const sessionId = "hijack-session";
       const contestedId = "contested-member";
 
       // The holder takes the slot first.
       const holder = await openClient(port);
-      const holderFrames = collectFrames(holder);
-      holder.send(joinMessage(sessionId, contestedId));
-      await settle(50);
+      await join(holder, sessionId, contestedId);
+      const delivered = awaitFrame(holder);
 
-      // A second connection claims the very same slot.
+      // A second connection claims the very same slot and is refused.
       const hijacker = await openClient(port);
       const hijackerFrames = collectFrames(hijacker);
-      const hijackerClose = recordClose(hijacker);
+      const hijackerClosed = awaitClose(hijacker);
       hijacker.send(joinMessage(sessionId, contestedId));
-      await settle(100);
+      expect(await hijackerClosed).toBe(1008);
 
       // A peer broadcasts once.
       const peer = await openClient(port);
-      peer.send(joinMessage(sessionId, "peer"));
-      await settle(50);
+      await join(peer, sessionId, "peer");
       peer.send(sealedFrame(sessionId, "peer"));
-      await settle(200);
 
       // The holder keeps its routing; the hijacker never took it over.
-      expect(holderFrames.length).toBeGreaterThan(0);
+      expect((await delivered).id).toBe("peer");
       expect(hijackerFrames.length).toBe(0);
-      expect(hijackerClose.code).toBe(1008);
-
-      holder.close();
-      hijacker.close();
-      peer.close();
     });
   });
 
   describe("8. Routing integrity: frames need a slot the sender holds", () => {
     it("should drop a sealed frame from a connection that never joined the session", async () => {
-      const port = 9007;
-      const relay = new CiphertextOnlyRelayServer();
-      const _serverPromise = relay.serve({ hostname: "127.0.0.1", port });
-      await settle(100);
+      const { port } = await startRelay();
 
       const sessionId = "injection-session";
 
       const member = await openClient(port);
+      await join(member, sessionId, "member");
       const memberFrames = collectFrames(member);
-      member.send(joinMessage(sessionId, "member"));
-      await settle(50);
 
       // An outsider injects a well-formed frame into a session it never joined.
       const outsider = await openClient(port);
       outsider.send(sealedFrame(sessionId, "member"));
-      await settle(200);
 
+      await settle();
       expect(memberFrames.length).toBe(0);
-
-      member.close();
-      outsider.close();
     });
   });
 
   describe("9. Malformed frames are refused, never thrown", () => {
     it("should close the sender cleanly and keep serving the other members", async () => {
-      const port = 9008;
-      const relay = new CiphertextOnlyRelayServer();
-      const _serverPromise = relay.serve({ hostname: "127.0.0.1", port });
-      await settle(100);
+      const { port } = await startRelay();
 
       const sessionId = "malformed-session";
 
       const sender = await openClient(port);
-      const senderClose = recordClose(sender);
-      sender.send(joinMessage(sessionId, "sender"));
-      await settle(50);
+      await join(sender, sessionId, "sender");
+      const senderClosed = awaitClose(sender);
 
       // Passes the id/epoch check, then used to blow up on Array.from(undefined).
       sender.send(
@@ -489,28 +366,40 @@ describe("CiphertextOnlyRelayServer", () => {
           frame: { id: "sender", epoch: 0 },
         }),
       );
-      await settle(200);
 
       // Clean refusal, not an exception escaping the message handler.
-      expect(senderClose.code).toBe(1008);
+      expect(await senderClosed).toBe(1008);
 
       // The relay is still serving: two fresh members exchange a frame.
       const listener = await openClient(port);
-      const listenerFrames = collectFrames(listener);
-      listener.send(joinMessage(sessionId, "listener"));
-      await settle(50);
+      await join(listener, sessionId, "listener");
+      const delivered = awaitFrame(listener);
 
       const talker = await openClient(port);
-      talker.send(joinMessage(sessionId, "talker"));
-      await settle(50);
+      await join(talker, sessionId, "talker");
       talker.send(sealedFrame(sessionId, "talker"));
-      await settle(200);
 
-      expect(listenerFrames.length).toBeGreaterThan(0);
+      expect((await delivered).id).toBe("talker");
+    });
+  });
 
-      sender.close();
-      listener.close();
-      talker.close();
+  describe("10. A started relay can be stopped", () => {
+    it("should release the listening port so no server outlives its test", async () => {
+      const relay = new CiphertextOnlyRelayServer();
+      const handle = await relay.serve({ hostname: "127.0.0.1", port: 0 });
+      const { port } = handle;
+
+      // While the relay listens, that port is taken: binding it again throws.
+      expect(() =>
+        Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("") }),
+      ).toThrow();
+
+      handle.stop();
+
+      // Once stopped, the very same port binds again — the listener is gone.
+      const rebound = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("ok") });
+      expect(rebound.port).toBe(port);
+      void rebound.stop(true);
     });
   });
 });
