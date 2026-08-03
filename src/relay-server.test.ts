@@ -222,7 +222,7 @@ describe("CiphertextOnlyRelayServer", () => {
 
   describe("4. Member join/leave", () => {
     it("should track members and clean up empty sessions", async () => {
-      const { port } = await startRelay();
+      const { relay, port } = await startRelay();
 
       const sessionId = "test-session-cleanup";
       const memberId = "cleanup-member";
@@ -230,12 +230,14 @@ describe("CiphertextOnlyRelayServer", () => {
       const client = await openClient(port);
       await join(client, sessionId, memberId);
 
+      // The occupancy census replaces the placeholder assertion this test
+      // used to carry: the cleanup is now read, not assumed.
+      expect(relay.stats()).toEqual({ sessions: 1, slots: 1, staleSlots: 0 });
+
       client.send(JSON.stringify({ type: "leave", sessionId, memberId }));
       await settle(100);
 
-      // After leaving, the session should be cleaned up
-      // (We can't directly inspect relay state, but the relay should not crash)
-      expect(true).toBe(true); // Placeholder assertion
+      expect(relay.stats()).toEqual({ sessions: 0, slots: 0, staleSlots: 0 });
     });
   });
 

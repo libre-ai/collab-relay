@@ -98,6 +98,24 @@ interface SessionState {
 }
 
 /**
+ * A census of what the routing map currently holds.
+ *
+ * Occupancy is the relay's own availability surface: it is the thing that
+ * grows when a session is retained after everyone left, and the thing an
+ * operator has to watch on a brick that claims availability as its
+ * responsibility. Counting it is the only way to tell a live session from a
+ * retained one from the outside.
+ */
+export interface RelayStats {
+  /** Sessions currently held in memory. */
+  readonly sessions: number;
+  /** Routing slots across all sessions. */
+  readonly slots: number;
+  /** Slots whose socket is no longer OPEN — each one is a retained corpse. */
+  readonly staleSlots: number;
+}
+
+/**
  * A running relay: the port it actually bound, and the means to stop it.
  *
  * `serve` used to discard the server object, so a started relay could never be
@@ -230,6 +248,32 @@ export class CiphertextOnlyRelayServer {
         void server.stop(true);
       },
     };
+  }
+
+  /**
+   * Count what the routing map holds right now.
+   *
+   * Read-only: mutates nothing, inspects no frame content, allocates one small
+   * object per call. Occupancy is derived on demand rather than kept as a
+   * counter, so it cannot drift away from the map it describes.
+   *
+   * @returns The number of sessions, of routing slots, and of slots whose
+   *          socket is no longer OPEN.
+   */
+  stats(): RelayStats {
+    let slots = 0;
+    let staleSlots = 0;
+
+    for (const session of this.sessions.values()) {
+      for (const client of session.members.values()) {
+        slots++;
+        if (client.readyState !== WebSocket.OPEN) {
+          staleSlots++;
+        }
+      }
+    }
+
+    return { sessions: this.sessions.size, slots, staleSlots };
   }
 
   /**

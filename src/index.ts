@@ -19,4 +19,5 @@ export {
   type RelayFrame,
   type RelayHandle,
   type RelayMessage,
+  type RelayStats,
 } from "./relay-server";
