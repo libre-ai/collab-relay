@@ -118,7 +118,19 @@ interface RelayWebSocket {
  * In-memory session state: tracks members and routes frames.
  */
 interface SessionState {
+  /** Routing slots: which connection currently answers for each memberId. */
   members: Map<string, RelayWebSocket>;
+  /**
+   * How many slots each connection holds here — the reverse of `members`.
+   *
+   * Sealed frames are only fanned out for a sender that holds a slot, and that
+   * question is asked on every single frame. Answering it by scanning `members`
+   * costs one comparison per member of the session, so the hot path would run
+   * at a length chosen by whoever filled the session. A count rather than a set
+   * because one connection may legitimately hold several slots: the entry
+   * disappears when the last of them goes.
+   */
+  slotsBySocket: Map<RelayWebSocket, number>;
 }
 
 /**
@@ -393,7 +405,7 @@ export class CiphertextOnlyRelayServer {
         return;
       }
 
-      session = { members: new Map() };
+      session = { members: new Map(), slotsBySocket: new Map() };
       this.sessions.set(sessionId, session);
     }
 
@@ -416,7 +428,7 @@ export class CiphertextOnlyRelayServer {
       return;
     }
 
-    session.members.set(memberId, ws);
+    this.claimSlot(session, memberId, ws);
 
     // Send acknowledgment
     ws.send(
@@ -540,6 +552,8 @@ export class CiphertextOnlyRelayServer {
     }
 
     session.members.delete(memberId);
+    this.dropSlotReference(session, ws);
+
     if (session.members.size === 0) {
       this.sessions.delete(sessionId);
     }
@@ -548,16 +562,57 @@ export class CiphertextOnlyRelayServer {
   /**
    * Whether this connection currently holds a routing slot in the session.
    *
+   * One lookup. This runs on every frame the relay routes, so a scan of the
+   * member list here would put the hot path's cost under the control of
+   * whoever filled the session.
+   *
    * @param session - The session to look in.
    * @param ws - The WebSocket connection to look for.
    */
   private holdsSlot(session: SessionState, ws: RelayWebSocket): boolean {
-    for (const client of session.members.values()) {
-      if (client === ws) {
-        return true;
-      }
+    return session.slotsBySocket.has(ws);
+  }
+
+  /**
+   * Give a routing slot to a connection, taking it from the previous holder.
+   *
+   * Both directions of the map move together, here and nowhere else, so they
+   * cannot drift apart. Re-claiming a slot one already holds changes nothing —
+   * it must not be counted twice, or the connection would look like a slot
+   * holder after releasing everything.
+   *
+   * @param session - The session owning the slot.
+   * @param memberId - The slot being claimed.
+   * @param ws - The connection claiming it.
+   */
+  private claimSlot(session: SessionState, memberId: string, ws: RelayWebSocket): void {
+    const previous = session.members.get(memberId);
+    if (previous === ws) {
+      return;
     }
-    return false;
+
+    if (previous) {
+      this.dropSlotReference(session, previous);
+    }
+
+    session.members.set(memberId, ws);
+    session.slotsBySocket.set(ws, (session.slotsBySocket.get(ws) ?? 0) + 1);
+  }
+
+  /**
+   * Account for one slot leaving a connection in this session.
+   *
+   * @param session - The session the slot belonged to.
+   * @param ws - The connection that held it.
+   */
+  private dropSlotReference(session: SessionState, ws: RelayWebSocket): void {
+    const remaining = (session.slotsBySocket.get(ws) ?? 1) - 1;
+
+    if (remaining > 0) {
+      session.slotsBySocket.set(ws, remaining);
+    } else {
+      session.slotsBySocket.delete(ws);
+    }
   }
 
   /**
@@ -577,11 +632,18 @@ export class CiphertextOnlyRelayServer {
    */
   private removeClientFromAllSessions(ws: RelayWebSocket): void {
     for (const [sessionId, session] of this.sessions) {
+      // Sessions this connection never joined cost one lookup, not one
+      // comparison per member.
+      if (!session.slotsBySocket.has(ws)) {
+        continue;
+      }
+
       for (const [memberId, client] of session.members) {
         if (client === ws) {
           session.members.delete(memberId);
         }
       }
+      session.slotsBySocket.delete(ws);
 
       if (session.members.size === 0) {
         this.sessions.delete(sessionId);

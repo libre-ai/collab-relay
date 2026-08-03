@@ -519,4 +519,42 @@ describe("CiphertextOnlyRelayServer", () => {
       expect(() => new CiphertextOnlyRelayServer({ maxSessions: Number.NaN })).toThrow(RangeError);
     });
   });
+
+  describe("13. Membership follows the slots a socket still holds", () => {
+    it("should route a sender's frames until it has released its last slot", async () => {
+      const { relay, port } = await startRelay();
+
+      const sessionId = "multi-slot-session";
+
+      const listener = await openClient(port);
+      await join(listener, sessionId, "listener");
+
+      const sender = await openClient(port);
+      await join(sender, sessionId, "first");
+      await join(sender, sessionId, "second");
+
+      // Re-claiming a slot it already holds must not count twice, or the
+      // sender would still look like a member after releasing everything.
+      await join(sender, sessionId, "second");
+      expect(relay.stats()).toEqual({ sessions: 1, slots: 3, staleSlots: 0 });
+
+      // One slot released, one still held: the sender is still a member.
+      sender.send(JSON.stringify({ type: "leave", sessionId, memberId: "first" }));
+      await settle(100);
+
+      const delivered = awaitFrame(listener);
+      sender.send(sealedFrame(sessionId, "second"));
+      expect((await delivered).id).toBe("second");
+
+      // Last slot released: the membership goes with it, frames are dropped.
+      const listenerFrames = collectFrames(listener);
+      sender.send(JSON.stringify({ type: "leave", sessionId, memberId: "second" }));
+      await settle(100);
+      sender.send(sealedFrame(sessionId, "second"));
+
+      await settle();
+      expect(listenerFrames.length).toBe(0);
+      expect(relay.stats()).toEqual({ sessions: 1, slots: 1, staleSlots: 0 });
+    });
+  });
 });
