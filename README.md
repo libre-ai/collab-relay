@@ -16,12 +16,12 @@ bun run check
 <!-- libre-ai:project-status:begin -->
 <!-- Section générée depuis project.v1.yaml — ne pas éditer à la main. -->
 
-- Situation actuelle : Née verte en γ 3.4 (ex packages/collab-relay).
+- Situation actuelle : Née verte en γ 3.4 (ex packages/collab-relay). Construite et testée, zéro consommateur en aval à ce jour — recherche croisée sur les 34 dépôts de la flotte, 2026-08-18 — en attente d'activation.
 - Maturité : usable
 - Exposition : spec-published
 - Confiance : medium
-- Preuves vérifiées le : 2026-07-30
-- Avancement : 50 % du périmètre actuellement déclaré
+- Preuves vérifiées le : 2026-08-18
+- Avancement : 0 % du périmètre actuellement déclaré
 
 <!-- libre-ai:project-status:end -->
 
