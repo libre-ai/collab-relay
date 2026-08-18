@@ -15,7 +15,9 @@ statement:
     - "aucun service tiers, aucune copie non vérifiée — consommation épinglée et gates de dérive"
 summary: "Relais de collaboration : transport des sessions d'édition partagée."
 current_situation: >-
-  Née verte en γ 3.4 (ex packages/collab-relay).
+  Née verte en γ 3.4 (ex packages/collab-relay). Construite et testée, zéro
+  consommateur en aval à ce jour — recherche croisée sur les 34 dépôts de la
+  flotte, 2026-08-18 — en attente d'activation.
 scope:
   - "Relais de collaboration : transport des sessions d'édition partagée."
 non_goals:
@@ -28,7 +30,7 @@ maturity: usable
 confidence: medium
 exposure: spec-published
 freshness:
-  last_verified_on: "2026-07-30"
+  last_verified_on: "2026-08-18"
 scope_stability: stable
 benchmark:
   none: "n/a (shared brick, no external parity target)"
@@ -39,10 +41,7 @@ phases:
       - id: consumed-pinned
         text: "La brique est consommée épinglée par les repos qui la déclarent."
         weight: 1
-        status: accepted
-        evidence:
-          date: "2026-07-29"
-          reference: "gate-acceptance-log 2026-07-29 (ligne 3.4), PRs hub #279-#283"
+        status: pending
       - id: compat-policy
         text: "L'API est couverte par une politique de compatibilité déclarée et un versionnage de rupture outillé."
         weight: 1
