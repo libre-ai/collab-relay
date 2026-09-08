@@ -42,10 +42,10 @@
   },
   "packageManager": "bun@1.4.0-canary.1",
   "overrides": {
-    "fast-uri": "4.1.2"
+    "fast-uri": "4.1.4"
   },
   "devDependencies": {
-    "@libre-ai/governance": "github:libre-ai/governance#9cd1d421d318129db99456d963f4bc1cfad67b33",
+    "@libre-ai/governance": "github:libre-ai/governance#8c238c09efd443a4866459160dac1cfee31d88be",
     "@biomejs/biome": "2.5.3",
     "@types/bun": "1.3.14",
     "typescript": "7.0.2"
