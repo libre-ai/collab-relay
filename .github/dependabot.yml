@@ -1,15 +1,31 @@
 # Canonical Dependabot configuration of the Libre AI fleet.
 #
 # Source of truth: libre-ai/governance, distribution/templates/dependabot/ —
-# four variants, one per manifest set observed at main. github-actions is
-# always present (every repository carries .github/workflows); bun is added
-# when package.json exists, cargo when Cargo.toml exists: github-actions.yml,
-# bun.yml, cargo.yml, bun-cargo.yml. Every non-archived repository of
-# ecosystem/repositories.v1.yaml carries the byte-exact copy of its variant
-# at .github/dependabot.yml; the weekly "Inventory drift" job
+# two variants, one per manifest set observed at main. github-actions is
+# always present (every repository carries .github/workflows); cargo is added
+# when Cargo.toml exists: github-actions.yml, cargo.yml. Every non-archived
+# repository of ecosystem/repositories.v1.yaml carries the byte-exact copy of
+# its variant at .github/dependabot.yml; the weekly "Inventory drift" job
 # (ecosystem/check-dependabot-conformance.ts) names each repository that
 # does not. Never edit this copy — change the template in governance and let
 # the next fleet wave carry it.
+#
+# No bun entry, on purpose (owner decision 2026-09-08). The bun variants
+# published on 2026-09-07 failed on their first run (governance run
+# 34139635260, job "bun in /."):
+#   Dependabot::DependencyFileNotSupported —
+#   Unsupported bun.lock 'lockfileVersion' 2 in /bun.lock.
+#   The bun version Dependabot runs supports up to 1.
+# Every fleet lockfile is written by bun 1.4 (lockfileVersion 2), so a bun
+# entry is a permanent job error that opens no pull request — a guard that
+# cannot prove it ran, which the doctrine forbids. Upstream:
+# https://github.com/dependabot/dependabot-core/issues/16026 (open on
+# 2026-09-08, "Bun 1.4 uses lockfile v2 which dependabot currently does not
+# support"). Restore the entry when dependabot-core reads lockfileVersion 2 —
+# an owner decision, proved by a trial pull request on one repository before
+# any fleet wave. Until then bun dependencies are watched by the weekly
+# "Fleet advisories" workflow (`bun audit` on every living lockfile,
+# tools/security/check-fleet-advisories.ts) and bumped by agent waves.
 #
 # Release-age guard, on purpose: bunfig.toml pins minimumReleaseAge to
 # 259200 seconds (3 days). A bump to a version younger than that fails
@@ -43,22 +59,3 @@ updates:
       github-actions:
         patterns:
           - "*"
-  - package-ecosystem: bun
-    directory: "/"
-    schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: Europe/Paris
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "chore(deps)"
-    cooldown:
-      default-days: 3
-    groups:
-      bun-minor-and-patch:
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
