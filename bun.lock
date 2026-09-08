@@ -6,14 +6,14 @@
       "name": "@libre-ai/collab-relay",
       "devDependencies": {
         "@biomejs/biome": "2.5.3",
-        "@libre-ai/governance": "github:libre-ai/governance#9cd1d421d318129db99456d963f4bc1cfad67b33",
+        "@libre-ai/governance": "github:libre-ai/governance#8c238c09efd443a4866459160dac1cfee31d88be",
         "@types/bun": "1.3.14",
         "typescript": "7.0.2",
       },
     },
   },
   "overrides": {
-    "fast-uri": "4.1.2",
+    "fast-uri": "4.1.4",
   },
   "packages": {
     "@biomejs/biome": ["@biomejs/biome@2.5.3", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "2.5.3", "@biomejs/cli-darwin-x64": "2.5.3", "@biomejs/cli-linux-arm64": "2.5.3", "@biomejs/cli-linux-arm64-musl": "2.5.3", "@biomejs/cli-linux-x64": "2.5.3", "@biomejs/cli-linux-x64-musl": "2.5.3", "@biomejs/cli-win32-arm64": "2.5.3", "@biomejs/cli-win32-x64": "2.5.3" }, "bin": { "biome": "bin/biome" } }, "sha512-MrJswFdei9EfDwwUy2tQrPDpK0AO+RmMFvBoaaJ6ayBc3sUbHdCE+XG5N8vp+5So41ZupZJQm0roHFFhMGVD7A=="],
@@ -34,7 +34,7 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.3", "", { "os": "win32", "cpu": "x64" }, "sha512-ExSaJWi4/u6+GXCszlSKpWSjKNbDseAYqqkCznsCsZ/4uidZ/BEqsCc5/3ctlq6dfIubdIIRSVLC/PG9xPl70Q=="],
 
-    "@libre-ai/governance": ["@libre-ai/governance@github:libre-ai/governance#9cd1d42", { "dependencies": { "ajv": "8.20.0", "ajv-formats": "3.0.1", "entities": "8.0.0" } }, "libre-ai-governance-9cd1d42", "sha512-vzThmVlYu0CvDUJFsK/LU4qNZk4apGgpyp0DcnXvu1XObiO0CCOV8jFzPRIMz+C+bq+UALuoMJpA6nsdtuEuIw=="],
+    "@libre-ai/governance": ["@libre-ai/governance@github:libre-ai/governance#8c238c0", { "dependencies": { "ajv": "8.20.0", "ajv-formats": "3.0.1", "entities": "8.0.0" } }, "libre-ai-governance-8c238c0", "sha512-Fq1afP1HR3hx4xAKfaMkCz3SiAI5o/l1dGp5X5khDbT8VV198cdlhpwBqUY38X1PhMHeoYMcTYwcQZBq74jrZw=="],
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
@@ -90,7 +90,7 @@
 
     "fast-deep-equal": ["fast-deep-equal@3.1.3", "", {}, "sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q=="],
 
-    "fast-uri": ["fast-uri@4.1.2", "", {}, "sha512-TyGmBcbDTZXcb2cj5MV89DrF42DKvb3y5DDUNh95iO+IMeAzMkVSxK1PZRrRIpc9yg8U2GhGdbofNa0LS/a4Bw=="],
+    "fast-uri": ["fast-uri@4.1.4", "", {}, "sha512-dODXrIxlS9JSdgAnhIUKOosKV1oMtU2VtVw87QRaHzyl5jxO290Ii5tEZfCfzfWNHi3jKWwBSdQj0qIyshdZdQ=="],
 
     "json-schema-traverse": ["json-schema-traverse@1.0.0", "", {}, "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug=="],
 

@@ -1,0 +1,64 @@
+# Canonical Dependabot configuration of the Libre AI fleet.
+#
+# Source of truth: libre-ai/governance, distribution/templates/dependabot/ —
+# four variants, one per manifest set observed at main. github-actions is
+# always present (every repository carries .github/workflows); bun is added
+# when package.json exists, cargo when Cargo.toml exists: github-actions.yml,
+# bun.yml, cargo.yml, bun-cargo.yml. Every non-archived repository of
+# ecosystem/repositories.v1.yaml carries the byte-exact copy of its variant
+# at .github/dependabot.yml; the weekly "Inventory drift" job
+# (ecosystem/check-dependabot-conformance.ts) names each repository that
+# does not. Never edit this copy — change the template in governance and let
+# the next fleet wave carry it.
+#
+# Release-age guard, on purpose: bunfig.toml pins minimumReleaseAge to
+# 259200 seconds (3 days). A bump to a version younger than that fails
+# `bun install --frozen-lockfile` in CI, and that red is the guard working —
+# never widen minimumReleaseAgeExcludes to make a Dependabot pull request
+# pass. `cooldown` below restates Dependabot's own 3-day default so both
+# guards read the same number; Dependabot never replaces the CI floor.
+#
+# Labels are left to Dependabot's defaults (`dependencies` plus the ecosystem
+# label, created on demand): a custom label absent from a repository is
+# silently ignored, which across a fleet is a guard that cannot prove it ran.
+#
+# Dependabot commits are forge-authored: the DCO gate accepts them from
+# governance generation 767ee84a (governance #29) onward and rejects them
+# before it — bump the fleet pin before restoring Dependabot on a repository.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Paris
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 3
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+  - package-ecosystem: bun
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Paris
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 3
+    groups:
+      bun-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
